@@ -1,116 +1,237 @@
 /**
- * UI Store
- *
- * Manages UI state like sidebar visibility, modals, and theme.
+ * UI Store - Manages UI state including layout, dialogs, and toasts.
  */
 
-import { create } from "zustand";
+import { defineStore } from 'pinia';
+import { ref } from 'vue';
 
-/** Sidebar sections that can be expanded/collapsed */
-export type SidebarSection = "favorites" | "drives" | "quickAccess";
+export type LayoutMode = 'single' | 'dual' | 'split';
 
-/** Pane layout mode */
-export type PaneMode = "single" | "dual";
-
-/** View mode for file list display */
-export type ViewMode = "list" | "grid";
-
-/** UI store state */
-interface UIState {
-  /** Whether the sidebar is visible */
-  sidebarVisible: boolean;
-  /** Expanded sidebar sections */
-  expandedSections: Set<SidebarSection>;
-  /** Whether properties panel is visible */
-  propertiesVisible: boolean;
-  /** Whether the app is in fullscreen mode */
-  isFullscreen: boolean;
-  /** Current modal (if any) */
-  activeModal: string | null;
-  /** Pane layout mode (single or dual pane) */
-  paneMode: PaneMode;
-  /** View mode (list or grid) */
-  viewMode: ViewMode;
-
-  // Actions
-  /** Toggle sidebar visibility */
-  toggleSidebar: () => void;
-  /** Set sidebar visibility */
-  setSidebarVisible: (visible: boolean) => void;
-  /** Toggle a sidebar section */
-  toggleSection: (section: SidebarSection) => void;
-  /** Toggle properties panel */
-  toggleProperties: () => void;
-  /** Set fullscreen state */
-  setFullscreen: (fullscreen: boolean) => void;
-  /** Open a modal */
-  openModal: (modalId: string) => void;
-  /** Close the active modal */
-  closeModal: () => void;
-  /** Toggle pane mode between single and dual */
-  togglePaneMode: () => void;
-  /** Set pane mode directly */
-  setPaneMode: (mode: PaneMode) => void;
-  /** Set view mode */
-  setViewMode: (mode: ViewMode) => void;
+export interface SplitNode {
+  id: string;
+  direction: 'horizontal' | 'vertical';
+  size: number; // percentage 0-100
+  children: (SplitNode | PaneRef)[];
 }
 
-export const useUIStore = create<UIState>((set) => ({
-  sidebarVisible: true,
-  expandedSections: new Set(["favorites", "drives"]),
-  propertiesVisible: false,
-  isFullscreen: false,
-  activeModal: null,
-  paneMode: "single", // Default to single pane
-  viewMode: "list", // Default to list view
+export interface PaneRef {
+  type: 'pane';
+  paneId: string;
+}
 
-  toggleSidebar: () => {
-    set((state) => ({ sidebarVisible: !state.sidebarVisible }));
-  },
+export interface ToastMessage {
+  id: string;
+  type: 'success' | 'error' | 'warning' | 'info';
+  title: string;
+  message?: string;
+  duration?: number;
+}
 
-  setSidebarVisible: (visible) => {
-    set({ sidebarVisible: visible });
-  },
+export interface DialogState {
+  type: 'confirm' | 'rename' | 'input' | 'newFolder' | null;
+  visible: boolean;
+  data: Record<string, unknown>;
+  resolve?: (value: unknown) => void;
+}
 
-  toggleSection: (section) => {
-    set((state) => {
-      const newSections = new Set(state.expandedSections);
-      if (newSections.has(section)) {
-        newSections.delete(section);
-      } else {
-        newSections.add(section);
-      }
-      return { expandedSections: newSections };
+export const useUIStore = defineStore('ui', () => {
+  // State
+  const layoutMode = ref<LayoutMode>('dual');
+  const splitLayout = ref<SplitNode | null>(null);
+  const sidebarVisible = ref(true);
+  const sidebarWidth = ref(240);
+  const transferPanelVisible = ref(false);
+  const transferPanelHeight = ref(200);
+  const propertiesPanelVisible = ref(false);
+  const fullscreen = ref(false);
+  const toasts = ref<ToastMessage[]>([]);
+  const dialog = ref<DialogState>({
+    type: null,
+    visible: false,
+    data: {},
+  });
+
+  // Actions
+  function setLayoutMode(mode: LayoutMode): void {
+    layoutMode.value = mode;
+  }
+
+  function toggleSidebar(): void {
+    sidebarVisible.value = !sidebarVisible.value;
+  }
+
+  function setSidebarWidth(width: number): void {
+    sidebarWidth.value = Math.max(180, Math.min(400, width));
+  }
+
+  function toggleTransferPanel(): void {
+    transferPanelVisible.value = !transferPanelVisible.value;
+  }
+
+  function setTransferPanelHeight(height: number): void {
+    transferPanelHeight.value = Math.max(150, Math.min(400, height));
+  }
+
+  function togglePropertiesPanel(): void {
+    propertiesPanelVisible.value = !propertiesPanelVisible.value;
+  }
+
+  function toggleFullscreen(): void {
+    fullscreen.value = !fullscreen.value;
+  }
+
+  // Toast actions
+  function addToast(toast: Omit<ToastMessage, 'id'>): void {
+    const id = crypto.randomUUID();
+    const newToast: ToastMessage = { id, duration: 3000, ...toast };
+    toasts.value.push(newToast);
+
+    if (newToast.duration && newToast.duration > 0) {
+      setTimeout(() => {
+        removeToast(id);
+      }, newToast.duration);
+    }
+  }
+
+  function removeToast(id: string): void {
+    const index = toasts.value.findIndex((t) => t.id === id);
+    if (index !== -1) {
+      toasts.value.splice(index, 1);
+    }
+  }
+
+  function success(title: string, message?: string): void {
+    addToast({ type: 'success', title, message });
+  }
+
+  function error(title: string, message?: string): void {
+    addToast({ type: 'error', title, message, duration: 5000 });
+  }
+
+  function warning(title: string, message?: string): void {
+    addToast({ type: 'warning', title, message });
+  }
+
+  function info(title: string, message?: string): void {
+    addToast({ type: 'info', title, message });
+  }
+
+  // Dialog actions
+  async function showConfirm(options: {
+    title: string;
+    message: string;
+    confirmLabel?: string;
+    cancelLabel?: string;
+    danger?: boolean;
+  }): Promise<boolean> {
+    return new Promise((resolve) => {
+      dialog.value = {
+        type: 'confirm',
+        visible: true,
+        data: options,
+        resolve: (value) => {
+          resolve(value as boolean);
+          dialog.value = { type: null, visible: false, data: {} };
+        },
+      };
     });
-  },
+  }
 
-  toggleProperties: () => {
-    set((state) => ({ propertiesVisible: !state.propertiesVisible }));
-  },
+  async function showRename(options: {
+    currentName: string;
+    isDirectory: boolean;
+  }): Promise<string | null> {
+    return new Promise((resolve) => {
+      dialog.value = {
+        type: 'rename',
+        visible: true,
+        data: options,
+        resolve: (value) => {
+          resolve(value as string | null);
+          dialog.value = { type: null, visible: false, data: {} };
+        },
+      };
+    });
+  }
 
-  setFullscreen: (fullscreen) => {
-    set({ isFullscreen: fullscreen });
-  },
+  async function showInput(options: {
+    title: string;
+    label: string;
+    defaultValue?: string;
+    placeholder?: string;
+  }): Promise<string | null> {
+    return new Promise((resolve) => {
+      dialog.value = {
+        type: 'input',
+        visible: true,
+        data: options,
+        resolve: (value) => {
+          resolve(value as string | null);
+          dialog.value = { type: null, visible: false, data: {} };
+        },
+      };
+    });
+  }
 
-  openModal: (modalId) => {
-    set({ activeModal: modalId });
-  },
+  async function showNewFolder(options: { defaultName?: string }): Promise<string | null> {
+    return new Promise((resolve) => {
+      dialog.value = {
+        type: 'newFolder',
+        visible: true,
+        data: options,
+        resolve: (value) => {
+          resolve(value as string | null);
+          dialog.value = { type: null, visible: false, data: {} };
+        },
+      };
+    });
+  }
 
-  closeModal: () => {
-    set({ activeModal: null });
-  },
+  function closeDialog(): void {
+    if (dialog.value.resolve) {
+      dialog.value.resolve(null);
+    }
+    dialog.value = { type: null, visible: false, data: {} };
+  }
 
-  togglePaneMode: () => {
-    set((state) => ({
-      paneMode: state.paneMode === "single" ? "dual" : "single",
-    }));
-  },
+  function confirmDialog(confirmed: boolean): void {
+    if (dialog.value.resolve) {
+      dialog.value.resolve(confirmed);
+    }
+    dialog.value = { type: null, visible: false, data: {} };
+  }
 
-  setPaneMode: (mode) => {
-    set({ paneMode: mode });
-  },
-
-  setViewMode: (mode) => {
-    set({ viewMode: mode });
-  },
-}));
+  return {
+    // State
+    layoutMode,
+    splitLayout,
+    sidebarVisible,
+    sidebarWidth,
+    transferPanelVisible,
+    transferPanelHeight,
+    propertiesPanelVisible,
+    fullscreen,
+    toasts,
+    dialog,
+    // Actions
+    setLayoutMode,
+    toggleSidebar,
+    setSidebarWidth,
+    toggleTransferPanel,
+    setTransferPanelHeight,
+    togglePropertiesPanel,
+    toggleFullscreen,
+    addToast,
+    removeToast,
+    success,
+    error,
+    warning,
+    info,
+    showConfirm,
+    showRename,
+    showInput,
+    showNewFolder,
+    closeDialog,
+    confirmDialog,
+  };
+});

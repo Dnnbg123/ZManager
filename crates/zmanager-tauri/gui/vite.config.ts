@@ -1,46 +1,36 @@
-import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
-import tailwindcss from "@tailwindcss/vite";
-import { createSvgIconsPlugin } from "vite-plugin-svg-icons";
-import { resolve } from "node:path";
+import { defineConfig } from 'vite';
+import vue from '@vitejs/plugin-vue';
+import tailwindcss from '@tailwindcss/vite';
+import { fileURLToPath, URL } from 'node:url';
+import { createSvgIconsPlugin } from 'vite-plugin-svg-icons';
+import path from 'node:path';
 
-// https://vite.dev/config/
-export default defineConfig({
+// https://vitejs.dev/config/
+export default defineConfig(async () => ({
   plugins: [
-    react(),
+    vue(),
     tailwindcss(),
     createSvgIconsPlugin({
-      // Specify icon directories to be cached
-      iconDirs: [
-        resolve(__dirname, "public/icons/dev_icons"),
-        resolve(__dirname, "public/icons/filetypes"),
-        resolve(__dirname, "public/icons/ui"),
-      ],
-      // Symbol ID format: icon-{dir}-{name}
-      // e.g., icon-typescript-typescript-original, icon-folder, icon-copy
-      symbolId: "icon-[dir]-[name]",
-      // Inject sprite at end of body
-      inject: "body-last",
-      customDomId: "__svg_icons__",
+      iconDirs: [path.resolve(process.cwd(), 'public/icons')],
+      symbolId: 'icon-[dir]-[name]',
     }),
   ],
   resolve: {
     alias: {
-      "@": resolve(__dirname, "./src"),
+      '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
   },
-  // Tauri expects a fixed port and will fail if it's not available
+  clearScreen: false,
   server: {
-    port: 5173,
+    port: 1420,
     strictPort: true,
+    watch: {
+      ignored: ['**/node_modules/**', '**/dist/**'],
+    },
   },
-  // Tauri expects the build output in the dist folder
   build: {
-    outDir: "dist",
-    target: "esnext",
-    minify: !process.env.TAURI_DEBUG ? "esbuild" : false,
+    target: ['es2021', 'chrome100', 'safari15'],
+    minify: !process.env.TAURI_DEBUG ? 'esbuild' : false,
     sourcemap: !!process.env.TAURI_DEBUG,
   },
-  // Prevent vite from obscuring Rust errors
-  clearScreen: false,
-});
+}));
