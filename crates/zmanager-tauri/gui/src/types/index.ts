@@ -1,6 +1,6 @@
 /**
- * TypeScript types matching the Rust backend structures.
- * These types mirror the zmanager-core domain types.
+ * Type definitions matching the Rust backend structures.
+ * These types mirror the zmanager-core domain types and IPC contract.
  */
 
 // ============================================================================
@@ -19,7 +19,7 @@ export interface IpcResponse<T> {
 // ============================================================================
 
 /** File system entry kind (snake_case to match Rust serde) */
-export type EntryKind = "file" | "directory" | "symlink" | "junction";
+export type EntryKind = 'file' | 'directory' | 'symlink' | 'junction';
 
 /** File system entry attributes (Windows-specific) */
 export interface EntryAttributes {
@@ -74,10 +74,10 @@ export interface DirListing {
 // ============================================================================
 
 /** Sort field options (snake_case to match Rust serde) */
-export type SortField = "name" | "size" | "modified" | "created" | "extension" | "kind";
+export type SortField = 'name' | 'size' | 'modified' | 'created' | 'extension' | 'kind';
 
 /** Sort order (snake_case to match Rust serde rename_all) */
-export type SortOrder = "ascending" | "descending";
+export type SortOrder = 'ascending' | 'descending';
 
 /** Sorting specification */
 export interface SortSpec {
@@ -87,7 +87,7 @@ export interface SortSpec {
 }
 
 /** Kind filter options (snake_case to match Rust serde) */
-export type KindFilter = "all" | "files_only" | "directories_only";
+export type KindFilter = 'all' | 'files_only' | 'directories_only';
 
 /** Filter specification - matches Rust FilterSpec from zmanager-core */
 export interface FilterSpec {
@@ -111,13 +111,13 @@ export interface FilterSpec {
 
 /** Drive type */
 export type DriveType =
-  | "Unknown"
-  | "NoRootDir"
-  | "Removable"
-  | "Fixed"
-  | "Network"
-  | "CdRom"
-  | "RamDisk";
+  | 'Unknown'
+  | 'NoRootDir'
+  | 'Removable'
+  | 'Fixed'
+  | 'Network'
+  | 'CdRom'
+  | 'RamDisk';
 
 /** Drive information */
 export interface DriveInfo {
@@ -138,13 +138,84 @@ export interface DriveInfo {
 }
 
 // ============================================================================
+// Transfer/Job Types
+// ============================================================================
+
+export type JobState = 'queued' | 'running' | 'paused' | 'completed' | 'failed' | 'canceled';
+
+export type TransferMode = 'copy' | 'move';
+
+export type ConflictPolicy = 'ask' | 'overwrite' | 'skip' | 'rename';
+
+export interface TransferItem {
+  from: string;
+  toDir: string;
+}
+
+export interface TransferJob {
+  jobId: string;
+  kind: TransferMode;
+  state: JobState;
+  items: TransferItem[];
+  conflict_policy: ConflictPolicy;
+  progress?: JobProgress;
+}
+
+export interface JobProgress {
+  bytesDone: number;
+  bytesTotal?: number;
+  itemsDone: number;
+  itemsTotal?: number;
+  currentPath?: string;
+  throughputBytesPerSec?: number;
+}
+
+export interface JobReport {
+  report: Array<{
+    path: string;
+    status: 'success' | 'failed' | 'skipped';
+    error?: { code: string; message: string };
+  }>;
+  summary: {
+    total: number;
+    succeeded: number;
+    failed: number;
+    skipped: number;
+  };
+}
+
+// ============================================================================
+// Favorite/Quick Access Types
+// ============================================================================
+
+export interface Favorite {
+  id: string;
+  name: string;
+  path: string;
+  order: number;
+  icon?: string;
+  is_valid: boolean;
+}
+
+// ============================================================================
+// Clipboard Types
+// ============================================================================
+
+export type ClipboardOperation = 'copy' | 'cut';
+
+export interface ClipboardState {
+  paths: string[];
+  operation: ClipboardOperation | null;
+}
+
+// ============================================================================
 // Default Values
 // ============================================================================
 
 /** Default sort specification (directories first, name ascending) */
 export const DEFAULT_SORT: SortSpec = {
-  field: "name",
-  order: "ascending",
+  field: 'name',
+  order: 'ascending',
   directories_first: true,
 };
 

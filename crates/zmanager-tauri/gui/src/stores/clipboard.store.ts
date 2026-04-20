@@ -1,115 +1,83 @@
 /**
- * Clipboard Store - Zustand store for file clipboard operations
- *
- * Manages copy/cut/paste state with keybinding support.
+ * Clipboard Store - Manages clipboard state for file operations.
  */
 
-import { invoke } from "@tauri-apps/api/core";
-import { create } from "zustand";
+import { defineStore } from 'pinia';
+import { ref, computed } from 'vue';
+import type { ClipboardOperation } from '../types';
+import { clipboardCopy, clipboardCut, clipboardPaste, clipboardClear } from '../shared/ipc';
 
-// ============================================================================
-// Types
-// ============================================================================
+export const useClipboardStore = defineStore('clipboard', () => {
+  // State
+  const paths = ref<string[]>([]);
+  const operation = ref<ClipboardOperation | null>(null);
 
-/** Clipboard operation type */
-export type ClipboardOperation = "copy" | "cut";
-
-/** Clipboard state DTO from backend */
-interface ClipboardDto {
-  paths: string[];
-  operation: ClipboardOperation | null;
-}
-
-// ============================================================================
-// Store State
-// ============================================================================
-
-interface ClipboardState {
-  /** Paths currently in clipboard */
-  paths: string[];
-  /** Current operation (copy or cut) */
-  operation: ClipboardOperation | null;
-  /** Loading state for paste operation */
-  isPasting: boolean;
-  /** Error message */
-  error: string | null;
+  // Computed
+  const hasContent = computed(() => paths.value.length > 0);
+  const isCut = computed(() => operation.value === 'cut');
+  const isCopy = computed(() => operation.value === 'copy');
 
   // Actions
-  copyPaths: (paths: string[]) => Promise<boolean>;
-  cutPaths: (paths: string[]) => Promise<boolean>;
-  paste: (destination: string) => Promise<number>;
-  getClipboard: () => Promise<void>;
-  clear: () => Promise<void>;
-  hasContent: () => boolean;
-}
-
-// ============================================================================
-// Store Implementation
-// ============================================================================
-
-export const useClipboardStore = create<ClipboardState>((set, get) => ({
-  paths: [],
-  operation: null,
-  isPasting: false,
-  error: null,
-
-  copyPaths: async (paths: string[]) => {
+  async function copy(pathsToCopy: string[]): Promise<boolean> {
     try {
-      await invoke("zmanager_clipboard_copy", { paths });
-      set({ paths, operation: "copy", error: null });
-      return true;
-    } catch (err) {
-      set({ error: String(err) });
-      return false;
-    }
-  },
-
-  cutPaths: async (paths: string[]) => {
-    try {
-      await invoke("zmanager_clipboard_cut", { paths });
-      set({ paths, operation: "cut", error: null });
-      return true;
-    } catch (err) {
-      set({ error: String(err) });
-      return false;
-    }
-  },
-
-  paste: async (destination: string) => {
-    set({ isPasting: true, error: null });
-    try {
-      const count = await invoke<number>("zmanager_clipboard_paste", { destination });
-
-      // If it was a cut operation, clear local state
-      if (get().operation === "cut") {
-        set({ paths: [], operation: null });
+      const success = await clipboardCopy(pathsToCopy);
+      if (success) {
+        paths.value = [...pathsToCopy];
+        operation.value = 'copy';
       }
+      return success;
+    } catch (_error) {
+      return false;
+    }
+  }
 
-      set({ isPasting: false });
+  async function cut(pathsToCut: string[]): Promise<boolean> {
+    try {
+      const success = await clipboardCut(pathsToCut);
+      if (success) {
+        paths.value = [...pathsToCut];
+        operation.value = 'cut';
+      }
+      return success;
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  async function paste(targetDir: string): Promise<number> {
+    try {
+      const count = await clipboardPaste(targetDir);
+      if (count > 0) {
+        // Clear clipboard after successful paste
+        paths.value = [];
+        operation.value = null;
+      }
       return count;
-    } catch (err) {
-      set({ isPasting: false, error: String(err) });
+    } catch (_error) {
       return 0;
     }
-  },
+  }
 
-  getClipboard: async () => {
-    try {
-      const dto = await invoke<ClipboardDto>("zmanager_clipboard_get");
-      set({ paths: dto.paths, operation: dto.operation, error: null });
-    } catch (err) {
-      set({ error: String(err) });
-    }
-  },
+  function clear(): void {
+    paths.value = [];
+    operation.value = null;
+    clipboardClear().catch(() => {
+      // Ignore errors
+    });
+  }
 
-  clear: async () => {
-    try {
-      await invoke("zmanager_clipboard_clear");
-      set({ paths: [], operation: null, error: null });
-    } catch (err) {
-      set({ error: String(err) });
-    }
-  },
-
-  hasContent: () => get().paths.length > 0,
-}));
+  return {
+    // State
+    paths,
+    operation,
+    // Computed
+    hasContent,
+    isCut,
+    isCopy,
+    // Actions
+    copy,
+    cut,
+    paste,
+    clear,
+  };
+});

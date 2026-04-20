@@ -1,17 +1,17 @@
 /**
- * File System Store
- *
- * Manages navigation state, directory listings, and file entries
- * for both left and right panes.
+ * File System Store - Manages navigation state and directory listings.
+ * 
+ * Uses Pinia for state management with support for multiple panes.
  */
 
-import { create } from "zustand";
-import { getDrives, navigate } from "../lib/tauri";
-import type { DirListing, DriveInfo, FilterSpec, SortSpec } from "../types";
-import { DEFAULT_FILTER, DEFAULT_SORT } from "../types";
+import { defineStore } from 'pinia';
+import { ref, computed } from 'vue';
+import type { DirListing, DriveInfo, FilterSpec, SortSpec } from '../types';
+import { DEFAULT_FILTER, DEFAULT_SORT } from '../types';
+import { getDrives, navigate } from '../shared/ipc';
 
 /** Which pane is being referenced */
-export type PaneId = "left" | "right";
+export type PaneId = string;
 
 /** State for a single file pane */
 export interface PaneState {
@@ -35,50 +35,38 @@ export interface PaneState {
   selectedIndices: Set<number>;
   /** Cursor index (focused entry) */
   cursorIndex: number;
+  /** Tab state for this pane */
+  tabs: PaneTab[];
+  /** Active tab index */
+  activeTabIndex: number;
+}
+
+/** Tab within a pane */
+export interface PaneTab {
+  id: string;
+  path: string;
+  title: string;
+  listing: DirListing | null;
+  scrollPosition: number;
+  selectedIndices: Set<number>;
+  cursorIndex: number;
 }
 
 /** Global file system store state */
 interface FileSystemState {
-  /** Left pane state */
-  left: PaneState;
-  /** Right pane state */
-  right: PaneState;
+  /** Map of pane states by ID */
+  panes: Map<PaneId, PaneState>;
   /** Which pane is active/focused */
-  activePane: PaneId;
+  activePaneId: PaneId | null;
   /** Available drives */
   drives: DriveInfo[];
   /** Loading drives */
   drivesLoading: boolean;
-
-  // Actions
-  /** Set active pane */
-  setActivePane: (pane: PaneId) => void;
-  /** Navigate to a path in the specified pane */
-  navigateTo: (pane: PaneId, path: string) => Promise<void>;
-  /** Go back in history */
-  goBack: (pane: PaneId) => Promise<void>;
-  /** Go forward in history */
-  goForward: (pane: PaneId) => Promise<void>;
-  /** Go to parent directory */
-  goUp: (pane: PaneId) => Promise<void>;
-  /** Refresh current directory */
-  refresh: (pane: PaneId) => Promise<void>;
-  /** Load available drives */
-  loadDrives: () => Promise<void>;
-  /** Set sort specification */
-  setSort: (pane: PaneId, sort: SortSpec) => void;
-  /** Set filter specification */
-  setFilter: (pane: PaneId, filter: FilterSpec) => void;
-  /** Set selected indices */
-  setSelection: (pane: PaneId, indices: Set<number>) => void;
-  /** Set cursor index */
-  setCursor: (pane: PaneId, index: number) => void;
-  /** Clear selection */
-  clearSelection: (pane: PaneId) => void;
 }
 
 /** Create initial pane state */
 function createInitialPaneState(defaultPath: string): PaneState {
+  const tabId = crypto.randomUUID();
   return {
     path: defaultPath,
     listing: null,
@@ -90,13 +78,30 @@ function createInitialPaneState(defaultPath: string): PaneState {
     filter: DEFAULT_FILTER,
     selectedIndices: new Set(),
     cursorIndex: 0,
+    tabs: [
+      {
+        id: tabId,
+        path: defaultPath,
+        title: getPathTitle(defaultPath),
+        listing: null,
+        scrollPosition: 0,
+        selectedIndices: new Set(),
+        cursorIndex: 0,
+      },
+    ],
+    activeTabIndex: 0,
   };
+}
+
+/** Get path title for tab */
+function getPathTitle(path: string): string {
+  const parts = path.replace(/\\/g, '/').replace(/\/$/, '').split('/');
+  return parts[parts.length - 1] || path;
 }
 
 /** Get parent path, handling Windows drive roots */
 function getParentPath(path: string): string | null {
-  // Normalize path
-  const normalized = path.replace(/\\/g, "/").replace(/\/$/, "");
+  const normalized = path.replace(/\\/g, '/').replace(/\/$/, '');
 
   // Check if we're at a drive root (e.g., "C:")
   if (/^[a-zA-Z]:$/.test(normalized)) {
@@ -104,7 +109,7 @@ function getParentPath(path: string): string | null {
   }
 
   // Get parent
-  const lastSlash = normalized.lastIndexOf("/");
+  const lastSlash = normalized.lastIndexOf('/');
   if (lastSlash === -1) {
     return null;
   }
@@ -119,237 +124,300 @@ function getParentPath(path: string): string | null {
   return parent || null;
 }
 
-export const useFileSystemStore = create<FileSystemState>((set, get) => ({
-  left: createInitialPaneState("C:\\"),
-  right: createInitialPaneState("D:\\"),
-  activePane: "left",
-  drives: [],
-  drivesLoading: false,
+export const useFileSystemStore = defineStore('fileSystem', () => {
+  // State
+  const panes = ref<Map<PaneId, PaneState>>(new Map());
+  const activePaneId = ref<PaneId | null>(null);
+  const drives = ref<DriveInfo[]>([]);
+  const drivesLoading = ref(false);
 
-  setActivePane: (pane) => {
-    set({ activePane: pane });
-  },
+  // Computed
+  const activePane = computed(() => {
+    if (!activePaneId.value) return null;
+    return panes.value.get(activePaneId.value) ?? null;
+  });
 
-  navigateTo: async (pane, path) => {
-    const state = get();
-    const paneState = state[pane];
+  const activeTab = computed(() => {
+    const pane = activePane.value;
+    if (!pane || pane.tabs.length === 0) return null;
+    return pane.tabs[pane.activeTabIndex];
+  });
 
-    // Set loading state
-    set({
-      [pane]: {
-        ...paneState,
-        isLoading: true,
-        error: null,
-      },
-    });
-
-    try {
-      const listing = await navigate(path, paneState.sort, paneState.filter);
-
-      // Update history: push current path to back stack, clear forward stack
-      const newHistoryBack =
-        paneState.path !== path
-          ? [...paneState.historyBack, paneState.path]
-          : paneState.historyBack;
-
-      set({
-        [pane]: {
-          ...paneState,
-          path,
-          listing,
-          isLoading: false,
-          error: null,
-          historyBack: newHistoryBack.slice(-100), // Max 100 entries
-          historyForward: [],
-          selectedIndices: new Set(),
-          cursorIndex: 0,
-        },
-      });
-    } catch (error) {
-      set({
-        [pane]: {
-          ...paneState,
-          isLoading: false,
-          error: error instanceof Error ? error.message : String(error),
-        },
-      });
+  // Actions
+  function createPane(id: PaneId, defaultPath: string = 'C:\\'): PaneState {
+    const state = createInitialPaneState(defaultPath);
+    panes.value.set(id, state);
+    if (!activePaneId.value) {
+      activePaneId.value = id;
     }
-  },
+    return state;
+  }
 
-  goBack: async (pane) => {
-    const paneState = get()[pane];
-    if (paneState.historyBack.length === 0) return;
-
-    const previousPath = paneState.historyBack[paneState.historyBack.length - 1];
-    const newHistoryBack = paneState.historyBack.slice(0, -1);
-    // Capture the updated historyForward before async operation
-    const newHistoryForward = [paneState.path, ...paneState.historyForward];
-
-    set({
-      [pane]: {
-        ...paneState,
-        historyForward: newHistoryForward,
-        historyBack: newHistoryBack,
-        isLoading: true,
-      },
-    });
-
-    try {
-      const listing = await navigate(previousPath, paneState.sort, paneState.filter);
-      set({
-        [pane]: {
-          ...get()[pane],
-          path: previousPath,
-          listing,
-          isLoading: false,
-          error: null,
-          selectedIndices: new Set(),
-          cursorIndex: 0,
-          // Explicitly preserve historyForward to avoid race conditions
-          historyForward: newHistoryForward,
-        },
-      });
-    } catch (error) {
-      set({
-        [pane]: {
-          ...get()[pane],
-          isLoading: false,
-          error: error instanceof Error ? error.message : String(error),
-        },
-      });
+  function removePane(id: PaneId): void {
+    panes.value.delete(id);
+    if (activePaneId.value === id) {
+      const remaining = Array.from(panes.value.keys());
+      activePaneId.value = remaining[0] ?? null;
     }
-  },
+  }
 
-  goForward: async (pane) => {
-    const paneState = get()[pane];
-    if (paneState.historyForward.length === 0) return;
-
-    const nextPath = paneState.historyForward[0];
-    const newHistoryForward = paneState.historyForward.slice(1);
-    // Capture the updated historyBack before async operation
-    const newHistoryBack = [...paneState.historyBack, paneState.path];
-
-    set({
-      [pane]: {
-        ...paneState,
-        historyBack: newHistoryBack,
-        historyForward: newHistoryForward,
-        isLoading: true,
-      },
-    });
-
-    try {
-      const listing = await navigate(nextPath, paneState.sort, paneState.filter);
-      set({
-        [pane]: {
-          ...get()[pane],
-          path: nextPath,
-          listing,
-          isLoading: false,
-          error: null,
-          selectedIndices: new Set(),
-          cursorIndex: 0,
-          // Explicitly preserve history stacks to avoid race conditions
-          historyBack: newHistoryBack,
-          historyForward: newHistoryForward,
-        },
-      });
-    } catch (error) {
-      set({
-        [pane]: {
-          ...get()[pane],
-          isLoading: false,
-          error: error instanceof Error ? error.message : String(error),
-        },
-      });
+  function setActivePane(id: PaneId): void {
+    if (panes.value.has(id)) {
+      activePaneId.value = id;
     }
-  },
+  }
 
-  goUp: async (pane) => {
-    const paneState = get()[pane];
-    const parentPath = getParentPath(paneState.path);
-    if (!parentPath) return;
+  async function loadPane(paneId: PaneId, path: string): Promise<void> {
+    const pane = panes.value.get(paneId);
+    if (!pane) return;
 
-    await get().navigateTo(pane, parentPath);
-  },
-
-  refresh: async (pane) => {
-    const paneState = get()[pane];
-    set({
-      [pane]: {
-        ...paneState,
-        isLoading: true,
-        error: null,
-      },
-    });
+    pane.isLoading = true;
+    pane.error = null;
 
     try {
-      const listing = await navigate(paneState.path, paneState.sort, paneState.filter);
-      set({
-        [pane]: {
-          ...get()[pane],
-          listing,
-          isLoading: false,
-          error: null,
-        },
-      });
+      const listing = await navigate(path, pane.sort, pane.filter);
+
+      // Update history
+      if (pane.path !== path) {
+        pane.historyBack = [...pane.historyBack, pane.path].slice(-100);
+        pane.historyForward = [];
+      }
+
+      pane.path = path;
+      pane.listing = listing;
+      pane.isLoading = false;
+      pane.selectedIndices = new Set();
+      pane.cursorIndex = 0;
+
+      // Update active tab
+      const tab = pane.tabs[pane.activeTabIndex];
+      if (tab) {
+        tab.path = path;
+        tab.title = getPathTitle(path);
+        tab.listing = listing;
+        tab.selectedIndices = new Set();
+        tab.cursorIndex = 0;
+      }
     } catch (error) {
-      set({
-        [pane]: {
-          ...get()[pane],
-          isLoading: false,
-          error: error instanceof Error ? error.message : String(error),
-        },
-      });
+      pane.isLoading = false;
+      pane.error = error instanceof Error ? error.message : String(error);
     }
-  },
+  }
 
-  loadDrives: async () => {
-    set({ drivesLoading: true });
+  async function navigateTo(paneId: PaneId, path: string): Promise<void> {
+    await loadPane(paneId, path);
+  }
+
+  async function goBack(paneId: PaneId): Promise<void> {
+    const pane = panes.value.get(paneId);
+    if (!pane || pane.historyBack.length === 0) return;
+
+    const previousPath = pane.historyBack[pane.historyBack.length - 1];
+    const newHistoryBack = pane.historyBack.slice(0, -1);
+    const newHistoryForward = [pane.path, ...pane.historyForward];
+
+    pane.historyBack = newHistoryBack;
+    pane.historyForward = newHistoryForward;
+    pane.isLoading = true;
+
     try {
-      const drives = await getDrives();
-      set({ drives, drivesLoading: false });
+      const listing = await navigate(previousPath, pane.sort, pane.filter);
+      pane.path = previousPath;
+      pane.listing = listing;
+      pane.isLoading = false;
+      pane.error = null;
+      pane.selectedIndices = new Set();
+      pane.cursorIndex = 0;
+    } catch (error) {
+      pane.isLoading = false;
+      pane.error = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  async function goForward(paneId: PaneId): Promise<void> {
+    const pane = panes.value.get(paneId);
+    if (!pane || pane.historyForward.length === 0) return;
+
+    const nextPath = pane.historyForward[0];
+    const newHistoryForward = pane.historyForward.slice(1);
+    const newHistoryBack = [...pane.historyBack, pane.path];
+
+    pane.historyBack = newHistoryBack;
+    pane.historyForward = newHistoryForward;
+    pane.isLoading = true;
+
+    try {
+      const listing = await navigate(nextPath, pane.sort, pane.filter);
+      pane.path = nextPath;
+      pane.listing = listing;
+      pane.isLoading = false;
+      pane.error = null;
+      pane.selectedIndices = new Set();
+      pane.cursorIndex = 0;
+    } catch (error) {
+      pane.isLoading = false;
+      pane.error = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  async function goUp(paneId: PaneId): Promise<void> {
+    const pane = panes.value.get(paneId);
+    if (!pane) return;
+
+    const parentPath = getParentPath(pane.path);
+    if (parentPath) {
+      await navigateTo(paneId, parentPath);
+    }
+  }
+
+  async function refresh(paneId: PaneId): Promise<void> {
+    const pane = panes.value.get(paneId);
+    if (!pane) return;
+
+    await loadPane(paneId, pane.path);
+  }
+
+  async function loadDrives(): Promise<void> {
+    drivesLoading.value = true;
+    try {
+      drives.value = await getDrives();
     } catch (_error) {
-      set({ drivesLoading: false });
+      // Ignore errors
+    } finally {
+      drivesLoading.value = false;
     }
-  },
+  }
 
-  setSort: (pane, sort) => {
-    const paneState = get()[pane];
-    set({
-      [pane]: { ...paneState, sort },
-    });
-    // Refresh to apply new sort
-    get().refresh(pane);
-  },
+  function setSort(paneId: PaneId, sort: SortSpec): void {
+    const pane = panes.value.get(paneId);
+    if (!pane) return;
 
-  setFilter: (pane, filter) => {
-    const paneState = get()[pane];
-    set({
-      [pane]: { ...paneState, filter },
-    });
-    // Refresh to apply new filter
-    get().refresh(pane);
-  },
+    pane.sort = sort;
+    refresh(paneId);
+  }
 
-  setSelection: (pane, indices) => {
-    const paneState = get()[pane];
-    set({
-      [pane]: { ...paneState, selectedIndices: indices },
-    });
-  },
+  function setFilter(paneId: PaneId, filter: FilterSpec): void {
+    const pane = panes.value.get(paneId);
+    if (!pane) return;
 
-  setCursor: (pane, index) => {
-    const paneState = get()[pane];
-    set({
-      [pane]: { ...paneState, cursorIndex: index },
-    });
-  },
+    pane.filter = filter;
+    refresh(paneId);
+  }
 
-  clearSelection: (pane) => {
-    const paneState = get()[pane];
-    set({
-      [pane]: { ...paneState, selectedIndices: new Set() },
-    });
-  },
-}));
+  function setSelection(paneId: PaneId, indices: Set<number>): void {
+    const pane = panes.value.get(paneId);
+    if (!pane) return;
+
+    pane.selectedIndices = new Set(indices);
+
+    // Also update active tab
+    const tab = pane.tabs[pane.activeTabIndex];
+    if (tab) {
+      tab.selectedIndices = new Set(indices);
+    }
+  }
+
+  function setCursor(paneId: PaneId, index: number): void {
+    const pane = panes.value.get(paneId);
+    if (!pane) return;
+
+    pane.cursorIndex = index;
+
+    // Also update active tab
+    const tab = pane.tabs[pane.activeTabIndex];
+    if (tab) {
+      tab.cursorIndex = index;
+    }
+  }
+
+  function clearSelection(paneId: PaneId): void {
+    setSelection(paneId, new Set());
+  }
+
+  // Tab management
+  function addTab(paneId: PaneId, path: string): void {
+    const pane = panes.value.get(paneId);
+    if (!pane) return;
+
+    const tabId = crypto.randomUUID();
+    const newTab: PaneTab = {
+      id: tabId,
+      path,
+      title: getPathTitle(path),
+      listing: null,
+      scrollPosition: 0,
+      selectedIndices: new Set(),
+      cursorIndex: 0,
+    };
+
+    pane.tabs.push(newTab);
+    pane.activeTabIndex = pane.tabs.length - 1;
+    loadPane(paneId, path);
+  }
+
+  function closeTab(paneId: PaneId, tabIndex: number): void {
+    const pane = panes.value.get(paneId);
+    if (!pane || pane.tabs.length <= 1) return;
+
+    pane.tabs.splice(tabIndex, 1);
+
+    if (pane.activeTabIndex >= pane.tabs.length) {
+      pane.activeTabIndex = pane.tabs.length - 1;
+    }
+
+    // Load the new active tab's path
+    const activeTab = pane.tabs[pane.activeTabIndex];
+    if (activeTab && activeTab.path !== pane.path) {
+      loadPane(paneId, activeTab.path);
+    }
+  }
+
+  function switchTab(paneId: PaneId, tabIndex: number): void {
+    const pane = panes.value.get(paneId);
+    if (!pane || tabIndex < 0 || tabIndex >= pane.tabs.length) return;
+
+    pane.activeTabIndex = tabIndex;
+    const tab = pane.tabs[tabIndex];
+    if (tab && tab.path !== pane.path) {
+      loadPane(paneId, tab.path);
+    }
+  }
+
+  // Initialize with default panes
+  function initialize(): void {
+    createPane('left', 'C:\\');
+    createPane('right', 'D:\\');
+    activePaneId.value = 'left';
+    loadDrives();
+  }
+
+  return {
+    // State
+    panes,
+    activePaneId,
+    drives,
+    drivesLoading,
+    // Computed
+    activePane,
+    activeTab,
+    // Actions
+    createPane,
+    removePane,
+    setActivePane,
+    navigateTo,
+    goBack,
+    goForward,
+    goUp,
+    refresh,
+    loadDrives,
+    setSort,
+    setFilter,
+    setSelection,
+    setCursor,
+    clearSelection,
+    addTab,
+    closeTab,
+    switchTab,
+    initialize,
+  };
+});
