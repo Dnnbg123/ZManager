@@ -1,3 +1,4 @@
+--- .gitignore (原始)
 ```
 # Dependencies
 node_modules/
@@ -59,4 +60,36 @@ pip-delete-this-directory.txt
 .nox/
 .pytest_cache/
 .mypy_cache/
+```
+
++++ .gitignore (修改后)
+```
+# Dependencies
+node_modules/
+
+# Build artifacts
+dist/
+build/
+target/
+
+# Tauri specific
+**/tauri/
+**/src-tauri/target/
+**/src-tauri/node_modules/
+
+# IDE
+.vscode/
+.idea/
+
+# Temp files
+*.tmp
+*.swp
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.local
+*.env.*
 ```
