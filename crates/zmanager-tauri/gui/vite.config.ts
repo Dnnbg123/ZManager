@@ -1,36 +1,24 @@
-import { defineConfig } from 'vite';
-import vue from '@vitejs/plugin-vue';
-import tailwindcss from '@tailwindcss/vite';
-import { fileURLToPath, URL } from 'node:url';
-import { createSvgIconsPlugin } from 'vite-plugin-svg-icons';
-import path from 'node:path';
-
-// https://vitejs.dev/config/
-export default defineConfig(async () => ({
-  plugins: [
-    vue(),
-    tailwindcss(),
-    createSvgIconsPlugin({
-      iconDirs: [path.resolve(process.cwd(), 'public/icons')],
-      symbolId: 'icon-[dir]-[name]',
-    }),
-  ],
+import { defineConfig } from "vite"
+import vue from "@vitejs/plugin-vue"
+import { fileURLToPath, URL } from "node:url"
+export default defineConfig({
+  plugins: [vue()],
   resolve: {
     alias: {
-      '@': fileURLToPath(new URL('./src', import.meta.url)),
+      "@": fileURLToPath(new URL("./src", import.meta.url)),
+      "@app": fileURLToPath(new URL("./src/app", import.meta.url)),
+      "@pages": fileURLToPath(new URL("./src/pages", import.meta.url)),
+      "@widgets": fileURLToPath(new URL("./src/widgets", import.meta.url)),
+      "@features": fileURLToPath(new URL("./src/features", import.meta.url)),
+      "@entities": fileURLToPath(new URL("./src/entities", import.meta.url)),
+      "@shared": fileURLToPath(new URL("./src/shared", import.meta.url)),
     },
   },
-  clearScreen: false,
-  server: {
-    port: 1420,
-    strictPort: true,
-    watch: {
-      ignored: ['**/node_modules/**', '**/dist/**'],
-    },
-  },
+  // server: {
+  //   port: 3000,
+  // },
   build: {
-    target: ['es2021', 'chrome100', 'safari15'],
-    minify: !process.env.TAURI_DEBUG ? 'esbuild' : false,
-    sourcemap: !!process.env.TAURI_DEBUG,
+    target: "esnext",
+    minify: "esbuild",
   },
-}));
+})
